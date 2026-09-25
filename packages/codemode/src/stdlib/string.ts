@@ -36,6 +36,35 @@ const requireDataArgument = (name: string, index: number, arg: Value): Value => 
   return arg
 }
 
+// The host builds the replaced string in one synchronous step, so its length is bounded before the call. Without `$`
+// the size is exact; `$&`, `$n`, and `$<name>` each expand to at most one match (their sum at most the subject),
+// and `$\`` or `$'` to at most the whole subject per match.
+const checkReplacementLength = (subject: string, matches: number, replacement: string): void => {
+  const contextual = replacement.includes("$`") || replacement.includes("$'")
+  const dollars = replacement.split("$").length - 1
+  const expansion = contextual ? subject.length : 0
+  checkStringLength(subject.length + matches * (replacement.length + expansion) + dollars * subject.length)
+}
+
+const countOccurrences = (subject: string, needle: string): number => {
+  if (needle === "") return subject.length + 1
+  let count = 0
+  for (let index = subject.indexOf(needle); index !== -1; index = subject.indexOf(needle, index + needle.length)) {
+    count += 1
+  }
+  return count
+}
+
+const countMatches = (subject: string, pattern: RegExp): number => {
+  const probe = new RegExp(pattern.source, pattern.flags)
+  let count = 0
+  for (let match = probe.exec(subject); match !== null; match = probe.exec(subject)) {
+    count += 1
+    if (match[0] === "") probe.lastIndex += 1
+  }
+  return count
+}
+
 const replaceAllNeedsGlobal = (pattern: RegExp) => {
   if (!pattern.global) {
     throw typeError(
@@ -204,14 +233,17 @@ export const stringGlobal = <R>(ctx: Interpreter<R>) => {
             )
           }
           const primitives = [search, replacement]
+          const text = str(name, primitives, 1)
           if (pattern instanceof RegExpObj) {
             const regex = pattern.regex
-            const text = str(name, primitives, 1)
             if (name === "replaceAll") replaceAllNeedsGlobal(regex)
+            checkReplacementLength(value, regex.global ? countMatches(value, regex) : 1, text)
             return name === "replace" ? value.replace(regex, text) : value.replaceAll(regex, text)
           }
-          if (name === "replace") return value.replace(str(name, primitives, 0), str(name, primitives, 1))
-          return value.replaceAll(str(name, primitives, 0), str(name, primitives, 1))
+          const needle = str(name, primitives, 0)
+          const occurrences = name === "replace" ? 1 : countOccurrences(value, needle)
+          checkReplacementLength(value, occurrences, text)
+          return name === "replace" ? value.replace(needle, text) : value.replaceAll(needle, text)
         },
       )
     })

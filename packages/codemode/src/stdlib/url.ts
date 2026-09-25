@@ -1,4 +1,5 @@
 import { Effect } from "effect"
+import { boundedString } from "../interpreter/limits.js"
 import { constructor, fn, type Method, methods, prototypeFrom, receiver, requiresNew } from "../interpreter/native.js"
 import { IteratorSymbol, PendingThrow, typeError, uriError } from "../interpreter/model.js"
 import {
@@ -45,11 +46,14 @@ const uriFunctions: Record<UriFunction, (value: string) => string> = {
 export const uriGlobal = <R>(ctx: Interpreter<R>, name: UriFunction) =>
   fn<R>(ctx.builtins, name, 1, (_, args) => {
     const value = coerceToString(args[0])
-    try {
-      return uriFunctions[name](value)
-    } catch (error) {
-      throw uriError(`${name} received malformed URI data: ${error instanceof Error ? error.message : String(error)}`)
-    }
+    const encoded = (() => {
+      try {
+        return uriFunctions[name](value)
+      } catch (error) {
+        throw uriError(`${name} received malformed URI data: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    })()
+    return boundedString(encoded)
   })
 
 const urlArgument = (value: Value): string => (value instanceof URLObj ? value.url.href : coerceToString(value))
@@ -272,7 +276,7 @@ export const urlSearchParamsGlobal = <R>(ctx: Interpreter<R>) => {
     ["keys", 0, (thisValue) => hostIterator(builtins, self(thisValue, "keys").params.keys())],
     ["values", 0, (thisValue) => hostIterator(builtins, self(thisValue, "values").params.values())],
     ["entries", 0, (thisValue) => hostIterator(builtins, self(thisValue, "entries").iterator(builtins))],
-    ["toString", 0, (thisValue) => self(thisValue, "toString").params.toString()],
+    ["toString", 0, (thisValue) => boundedString(self(thisValue, "toString").params.toString())],
     [
       "forEach",
       1,

@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { checkArrayLength, checkStringLength } from "../interpreter/limits.js"
+import { boundedString, checkArrayLength, checkStringLength } from "../interpreter/limits.js"
 import { constructor, methods, prototypeFrom, receiver, requiresNew } from "../interpreter/native.js"
 import { IteratorSymbol, rangeError, syntaxError, typeError } from "../interpreter/model.js"
 import {
@@ -171,8 +171,8 @@ export const uint8ArrayGlobal = <R>(ctx: Interpreter<R>) => {
         return joined
       },
     ],
-    ["toString", 0, (thisValue) => self(thisValue, "toString").bytes.join(",")],
-    ["toBase64", 0, (thisValue) => self(thisValue, "toBase64").bytes.toBase64()],
+    ["toString", 0, (thisValue) => boundedString(self(thisValue, "toString").bytes.join(","))],
+    ["toBase64", 0, (thisValue) => boundedString(self(thisValue, "toBase64").bytes.toBase64())],
     ["toHex", 0, (thisValue) => self(thisValue, "toHex").bytes.toHex()],
     ["keys", 0, (thisValue) => hostIterator(builtins, self(thisValue, "keys").bytes.keys())],
     ["values", 0, (thisValue) => hostIterator(builtins, self(thisValue, "values").bytes.values())],

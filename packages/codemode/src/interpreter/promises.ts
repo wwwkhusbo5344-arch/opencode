@@ -1,6 +1,6 @@
 import { Cause, Deferred, Effect, Exit, Fiber, Scope } from "effect"
 import type { Diagnostic } from "../codemode.js"
-import { MAX_PENDING_PROMISES } from "./limits.js"
+import { MAX_DIAGNOSTIC_MESSAGE_LENGTH, MAX_PENDING_PROMISES, MAX_REJECTION_DIAGNOSTICS } from "./limits.js"
 import { CallSite, Throw, rangeError, typeError } from "./model.js"
 import { Callable, define, get, hidden, Arr, Fn, Obj, PromiseObj, record, type Value } from "./objects.js"
 import { constructor, fn, methods, native, receiver, requiresNew } from "./native.js"
@@ -22,6 +22,7 @@ export class Pending<R> {
   private readonly ids = new WeakMap<PromiseObj, number>()
   private readonly observed = new WeakSet<PromiseObj>()
   private readonly failures = new Map<number, Diagnostic>()
+  private droppedFailures = 0
   private nextID = 0
 
   constructor(
@@ -60,10 +61,17 @@ export class Pending<R> {
             this.ids.delete(promise)
             return
           }
+          if (this.failures.size >= MAX_REJECTION_DIAGNOSTICS) {
+            this.droppedFailures += 1
+            return
+          }
           const failure = normalizeError(Cause.squash(exit.cause))
           this.failures.set(id, {
             ...failure,
-            message: `Unhandled rejection from an un-awaited promise: ${failure.message}`,
+            message: `Unhandled rejection from an un-awaited promise: ${failure.message}`.slice(
+              0,
+              MAX_DIAGNOSTIC_MESSAGE_LENGTH,
+            ),
           })
         })
         return promise
@@ -88,7 +96,15 @@ export class Pending<R> {
   }
 
   diagnostics(): Array<Diagnostic> {
-    return [...this.failures].sort(([left], [right]) => left - right).map(([, failure]) => failure)
+    const retained = [...this.failures].sort(([left], [right]) => left - right).map(([, failure]) => failure)
+    if (this.droppedFailures === 0) return retained
+    return [
+      ...retained,
+      {
+        kind: "ExecutionFailure",
+        message: `${this.droppedFailures} more un-awaited promises rejected; only the first ${MAX_REJECTION_DIAGNOSTICS} are reported.`,
+      },
+    ]
   }
 
   // Re-check because a straggler can create promises before its interruption lands.
@@ -113,21 +129,31 @@ export const resolvePromiseValue = <R>(
   }
   if (value instanceof PromiseObj) return ctx.await(value)
   if (!(value instanceof Obj)) return Effect.succeed(value)
-  const then = get(value, "then")
-  if (typeofValue(then) !== "function") return Effect.succeed(value)
+  if (typeofValue(get(value, "then")) !== "function") return Effect.succeed(value)
 
+  // A loop, not recursion: a thenable that keeps resolving with another thenable must run in constant memory.
   return Effect.gen(function* () {
-    // Promise resolution invokes a thenable's method in a later job.
-    yield* Effect.yieldNow
-    const deferred = Deferred.makeUnsafe<Value, unknown>()
-    const resolve = capability(ctx, "resolve", (result) => Deferred.doneUnsafe(deferred, Exit.succeed(result)))
-    const reject = capability(ctx, "reject", (reason) => Deferred.doneUnsafe(deferred, Exit.fail(new Throw(reason))))
-    const executed = yield* Effect.exit(ctx.call(then, value, [resolve, reject]))
-    if (!Exit.isSuccess(executed)) {
-      if (Cause.hasInterruptsOnly(executed.cause)) return yield* Effect.failCause(executed.cause)
-      Deferred.doneUnsafe(deferred, Exit.fail(Cause.squash(executed.cause)))
+    let current: Value = value
+    while (true) {
+      if (own?.promise !== undefined && current === own.promise) {
+        throw typeError("Chaining cycle detected: a promise cannot resolve with itself.")
+      }
+      if (current instanceof PromiseObj) return yield* ctx.await(current)
+      if (!(current instanceof Obj)) return current
+      const then = get(current, "then")
+      if (typeofValue(then) !== "function") return current
+      // Promise resolution invokes a thenable's method in a later job.
+      yield* Effect.yieldNow
+      const deferred = Deferred.makeUnsafe<Value, unknown>()
+      const resolve = capability(ctx, "resolve", (result) => Deferred.doneUnsafe(deferred, Exit.succeed(result)))
+      const reject = capability(ctx, "reject", (reason) => Deferred.doneUnsafe(deferred, Exit.fail(new Throw(reason))))
+      const executed = yield* Effect.exit(ctx.call(then, current, [resolve, reject]))
+      if (!Exit.isSuccess(executed)) {
+        if (Cause.hasInterruptsOnly(executed.cause)) return yield* Effect.failCause(executed.cause)
+        Deferred.doneUnsafe(deferred, Exit.fail(Cause.squash(executed.cause)))
+      }
+      current = yield* Deferred.await(deferred)
     }
-    return yield* resolvePromiseValue(ctx, yield* Deferred.await(deferred), own)
   })
 }
 

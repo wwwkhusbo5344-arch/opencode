@@ -1,4 +1,5 @@
 import { fn, methods } from "../interpreter/native.js"
+import { boundedString } from "../interpreter/limits.js"
 import { typeError } from "../interpreter/model.js"
 import {
   define,
@@ -32,11 +33,14 @@ export const base64Global = <R>(ctx: Interpreter<R>, name: "atob" | "btoa") =>
   fn<R>(ctx.builtins, name, 1, (_, args) => {
     if (args.length === 0) throw typeError(`${name} requires 1 argument (a string)`)
     const input = coerceToString(args[0])
-    try {
-      return name === "atob" ? atob(input) : btoa(input)
-    } catch {
-      throw typeError("The string contains invalid characters.")
-    }
+    const output = (() => {
+      try {
+        return name === "atob" ? atob(input) : btoa(input)
+      } catch {
+        throw typeError("The string contains invalid characters.")
+      }
+    })()
+    return boundedString(output)
   })
 
 // HTML structured clone over CodeMode's data kinds. Shared references survive through the memo; prototypes and
